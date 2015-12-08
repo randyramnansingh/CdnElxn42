@@ -3,115 +3,102 @@
 # You can find out more about building applications with Shiny here:
 #
 # http://shiny.rstudio.com
-#
+# Author: Randy Ramnansingh
 
 library(shiny)
-library(ibmdbR)   # In-Database analytics functions for DB2
-require(ibmdbRXt) #In-Database functions for geospatial analytics
-require(leaflet) # For rendering map visualisation
-require(RColorBrewer) # For rendering color to map
-require(ggplot2)
+library(ibmdbR) 
+library(dygraphs)
+library(googleVis)
+
+# connecting to dashdb, setting up ida data frames for tables with tweets for each respective party
+con <- idaConnect('BLUDB','','')
+idaInit(con)
+tweets_cpc <- ida.data.frame('DASH013612."tweets_CPC"') # Conservative 
+tweets_ndp <- ida.data.frame('DASH013612."tweets_NDP"') # New Democratic
+tweets_gpc <- ida.data.frame('DASH013612."tweets_GPC"') # Green
+tweets_lpc <- ida.data.frame('DASH013612."tweets_LPC"') # Liberal
+tweets_bq <- ida.data.frame('DASH013612."tweets_BQ"')   # Bloc Québécois
+#tweets_fetd <- ida.data.frame('DASH013612."tweets_FETD"') # Strength in Democracy
+
+
+######################################################################################################################
+# Function to calculate the Sentiment Score by Province for each Party
+
+sentimentScorebyProvince <- function(x)
+{
+  print("calculating sentiment score by province")
+  x <- as.data.frame(x[x$smaAuthorState != '', 5:7]) #TODO: chanage 5:7 to columns relative to your data (5 is State, 7 is Sentiment Number)
+  x <- x[ x$smaAuthorState %in% c("Alberta", "British Columbia", "Manitoba", "New Brunswick", "Newfoundland and Labrador", "Nova Scotia", "Ontario", "Prince Edward Island", "Quebec", "Saskatchewan", "Northwest Territories", "Nunavut", "Yukon"), ]
+  a <- aggregate(x$sent_Num, by = list(smaAuthorState = x$smaAuthorState), mean, na.action = na.omit)
+  print("calculation done")
+  return (a)
+}
+#####################################################################################################################
+#####################################################################################################################
+# Function to generate multiple time series object
+
+groupTweetsbyTime <- function(x)
+{
+  if(nrow(x) == 0)
+  {
+    print(paste("Grouping tweets by time :",deparse(substitute(x))))
+    x <- as.data.frame(x);
+    l <- length(unique(x$msgPostedTime))
+    msgPostedTime <- Sys.Date() - c(1:l)
+    sent_Num <- c(0,l)
+    x <- data.frame(msgPostedTime, sent_Num)
+  }
+  else
+  {
+    print(paste("Grouping tweets by time :",deparse(substitute(x))))
+    x <- as.data.frame(x[x$msgId != '' ,c('sent_Num', 'msgPostedTime')])
+    print("Parsing Date")
+    x$msgPostedTime <- as.Date(x$msgPostedTime)
+  }
+  print("Aggregating Data")
+  a <- aggregate(x$sent_Num, by = list(Date = x$msgPostedTime), mean)
+  a <- xts(a[,-1],a$Date)
+  return (a)
+}
+if(!file.exists("ts.RData")){ #TODO: check last modified date of ts.RData, if older than x amount of time, then refresh, otherwise use same data
+  sent_cpc_ts <- groupTweetsbyTime(tweets_cpc)
+  sent_gpc_ts <- groupTweetsbyTime(tweets_gpc)
+  sent_lpc_ts <- groupTweetsbyTime(tweets_lpc)
+  sent_ndp_ts <- groupTweetsbyTime(tweets_ndp)
+  sent_bq_ts <- groupTweetsbyTime(tweets_bq)
+  sent_ts <- cbind(sent_cpc_ts, sent_lpc_ts, sent_gpc_ts, sent_ndp_ts, sent_bq_ts)
+  save(sent_ts, file = "ts.RData")  
+} else{
+  load("ts.RData")
+  ls()
+}
+
+
+#####################################################################################################################
 
 shinyServer(function(input, output) {
   
-  #TODO: TimeSeries causes data to be generated twice, either figure out why or force data to be stored locally so it is not generated every call
-  output$TimeSeries <- renderPlot({
-  
-    groupTweetsbyTime <- function(x)
-    {
-      if(nrow(x) == 0)
-      {
-        print(paste("Grouping tweets by time :",deparse(substitute(x))))
-        x <- as.data.frame(x);
-        l <- length(unique(x$msgPostedTime))
-        msgPostedTime <- Sys.Date() - c(1:l)
-        sent_Num <- c(0,l)
-        x <- data.frame(msgPostedTime, sent_Num)
-      }
-      else
-      {
-      print(paste("Grouping tweets by time :",deparse(substitute(x))))
-      x <- as.data.frame(x[x$msgId != '' ,c('sent_Num', 'msgPostedTime')])
-      print("Parsing Date")
-      x$msgPostedTime <- as.Date(x$msgPostedTime)
-      }
-      print("Aggregating Data")
-      a <- aggregate(x$sent_Num, by = list(Date = x$msgPostedTime), mean)
-      return (a)
-    }
-    sent_cpc_ts <- groupTweetsbyTime(tweets_cpc)
-    sent_gpc_ts <- groupTweetsbyTime(tweets_gpc)
-    sent_lpc_ts <- groupTweetsbyTime(tweets_lpc)
-    sent_ndp_ts <- groupTweetsbyTime(tweets_ndp)
-    sent_bq_ts <- groupTweetsbyTime(tweets_bq)
-    #sent_fetd_ts <- groupTweetsbyTime(tweets_fetd)
-    print("Grouping done")
-    
-    #Strength in Democracy plot ommitted simply because there is no data for this party, reduces number of errors R runs into
-    ggplot() + geom_line(data = sent_cpc_ts,aes(x = Date, y = x), stat = "smooth", col = "blue", size = 0.8) + geom_line(data = sent_gpc_ts,aes(x = Date, y = x), stat = "smooth", col = "green",size = 0.8) + geom_line(data = sent_lpc_ts,aes(x = Date, y = x), stat = "smooth", col = "red",size = 0.8) + geom_line(data = sent_ndp_ts,aes(x = Date, y = x), stat = "smooth", col = "orange",size = 0.8) + geom_line(data = sent_bq_ts,aes(x = Date, y = x), stat = "smooth", col = "lightskyblue",size = 0.8) + xlab("Date") + ylab("Overall Sentiment") + theme(axis.text.x=element_text(angle = 90, hjust = 0)) + scale_colour_manual("",breaks = c("Conservative","Green","Liberal","NDP","BQ"),values = c("blue","green","red","orange","lightskyblue"))
+  output$dygraph <- renderDygraph({
+    dygraph(sent_ts, main = "Overall Twitter Sentiment per Party") %>%
+      dySeries("..1", label = "CPC", drawPoints = TRUE, color = "blue") %>%
+      dySeries("..2", label = "LPC", drawPoints = TRUE, color = "red") %>%
+      dySeries("..3", label = "GPC", drawPoints = TRUE, color = "green") %>%
+      dySeries("..4", label = "NDP", drawPoints = TRUE, color = "orange") %>%
+      dySeries("..5", label = "BQ", drawPoints = TRUE, color = "lightskyblue") %>%
+      dyRangeSelector()
   })
   
-  output$MapandChart <- renderLeaflet({
-    
-    map1 <- leaflet(data = can1) %>% addProviderTiles("CartoDB.Positron") %>% setView(lng = -106.857, lat = 58.667, zoom = 3)
-    
-    if(input$cd  == "c1")
-    {
-      
-      
-      #map <- 
-      addPolygons(map1,fillColor = ~pal(pal_cpc), fillOpacity = 0.8, color = "#BDBDC3",
-                  weight = 1,popup = state_popup_c1) %>% 
-        addLegend("bottomright",pal = pal, values = pal_cpc, 
-                  title = "Overall Sentiment",opacity = 1)
-    }
-    else if(input$cd  == "c2")
-    {
-      
-      
-      #map <- 
-      addPolygons(map1,fillColor = ~pal(pal_ndp), fillOpacity = 0.8, color = "#BDBDC3",
-                  weight = 1,popup = state_popup_c2) %>% 
-        addLegend("bottomright",pal = pal, values = pal_ndp, 
-                  title = "Overall Sentiment",opacity = 1)
-    }
-    
-    else if(input$cd  == "c3")
-    {
-      #map <- 
-      addPolygons(map1,fillColor = ~pal(pal_lpc), fillOpacity = 0.8, color = "#BDBDC3",
-                  weight = 1,popup = state_popup_c3) %>% 
-        addLegend("bottomright",pal = pal, values = pal_lpc, 
-                  title = "Overall Sentiment",opacity = 1)
-    }
-    
-    else if(input$cd == "c4")
-    {
-      
-      #map <- 
-      addPolygons(map1,fillColor = ~pal(pal_bq), fillOpacity = 0.8, color = "#BDBDC3",
-                  weight = 1,popup = state_popup_c4) %>% 
-        addLegend("bottomright",pal = pal, values = pal_bq, 
-                  title = "Overall Sentiment",opacity = 1)
-    }
-    
-    else if(input$cd  == "c5")
-    {
-      #map <- 
-      addPolygons(map1,fillColor = ~pal(pal_gpc), fillOpacity = 0.8, color = "#BDBDC3",
-                  weight = 1,popup = state_popup_c5) %>% 
-        addLegend("bottomright",pal = pal, values = pal_gpc, 
-                  title = "Overall Sentiment",opacity = 1)
-    }
-  #  else if(input$cd  == "c6")
-  #  {
-      
-      #map <- 
-  #    addPolygons(map1,fillColor = ~pal(pal_fetd), fillOpacity = 0.8, color = "#BDBDC3",
-  #                weight = 1,popup = state_popup_c6) %>% 
-  #      addLegend("bottomright",pal = pal, values = pal_fetd,
-  #                title = "Overall Sentiment",opacity = 1)
-  #  }
-    
+  datasetInput <- reactive({
+    switch(input$dataset,
+           "Stephen Harper" = sentimentScorebyProvince(tweets_cpc),
+           "Thomas Mulcair"= sentimentScorebyProvince(tweets_ndp),
+           "Justin Trudeau" = sentimentScorebyProvince(tweets_lpc),
+           "Gilles Duceppe" = sentimentScorebyProvince(tweets_bq),
+           "Elizabeth May" = sentimentScorebyProvince(tweets_gpc))
+  })
+  
+  output$view <- renderGvis({
+    gvisGeoChart(datasetInput(), locationvar='smaAuthorState', "x",
+                 options=list(region="CA", displayMode="regions", resolution="provinces"))
   })
 })

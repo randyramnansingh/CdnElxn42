@@ -1,0 +1,11 @@
+launchConfigurations/
+.Rproj.user
+.dockerignore
+.Rhistory
+*.ini
+db2dsdriver.cfg
+*.gz
+Dockerfile
+pubkey.pub
+*.zip
+can1.Rdata
